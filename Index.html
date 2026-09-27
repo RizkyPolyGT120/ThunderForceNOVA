@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Thunder Force NOVA</title>
+    <style>
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            background-color: #050510; color: white;
+            font-family: 'Courier New', Courier, monospace;
+            overflow: hidden; touch-action: none;
+        }
+        #game-container {
+            position: relative; width: 100%; height: 100%;
+            max-width: 600px; margin: 0 auto; background: #000;
+            box-shadow: 0 0 20px rgba(0, 255, 255, 0.2);
+        }
+        canvas { display: block; width: 100%; height: 100%; }
+        .screen {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            background: rgba(0, 0, 0, 0.85); z-index: 10; display: none; text-align: center;
+        }
+        .active { display: flex !important; }
+        h1 { color: #0ff; text-shadow: 0 0 10px #0ff; font-size: 2.5rem; margin-bottom: 10px; text-transform: uppercase;}
+        h2 { color: #f0f; font-size: 1.5rem; margin-bottom: 20px; }
+        button, select {
+            background: transparent; color: #0ff; border: 2px solid #0ff;
+            padding: 15px 30px; margin: 10px; font-size: 1.2rem; cursor: pointer;
+            text-transform: uppercase; font-family: inherit; transition: 0.2s;
+            width: 80%; max-width: 300px;
+        }
+        button:hover, select:hover { background: #0ff; color: #000; box-shadow: 0 0 15px #0ff; }
+        select { background: #000; }
+        #hud {
+            position: absolute; top: 10px; left: 10px; z-index: 5; pointer-events: none;
+            color: #0ff; font-weight: bold; text-shadow: 1px 1px 2px #000;
+        }
+        .stats { font-size: 0.9rem; color: #fff; margin-top: 5px;}
+        #ship-stats { font-size: 0.8rem; color: #aaa; text-align: left; width: 80%; max-width: 300px; margin-bottom: 15px; }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <canvas id="gameCanvas"></canvas>
+    
+    <div id="hud">
+        SCORE: <span id="score">0</span><br>
+        HP: <span id="hp">100</span>%<br>
+        <div class="stats">
+            PRI LVL: <span id="pri-lvl">1</span> | SEC LVL: <span id="sec-lvl">1</span>
+        </div>
+    </div>
+
+    <!-- Start Menu -->
+    <div id="start-menu" class="screen active">
+        <h1>Thunder Force<br>NOVA</h1>
+        <h2>Press Start</h2>
+        <button onclick="showMenu('main-menu')">Start Game</button>
+    </div>
+
+    <!-- Main Menu -->
+    <div id="main-menu" class="screen">
+        <h1>Main Menu</h1>
+        
+        <select id="mode-select"></select>
+        <select id="diff-select"></select>
+        <select id="ship-select">
+            <option value="viper">RKU 01 Viper</option>
+            <option value="drill" disabled>TOU 01 Drill (Locked)</option>
+            <option value="wizard" disabled>STO 01 Wizard (Locked)</option>
+            <option value="master" disabled>Thunder Force Master (Locked)</option>
+        </select>
+        
+        <div id="ship-stats">
+            <strong>Primary:</strong> Blaster (White)<br>
+            <strong>Secondary:</strong> Missile (Cyan)
+        </div>
+
+        <button onclick="startGame()">Launch Sortie</button>
+        <button onclick="showMenu('start-menu')">Back</button>
+    </div>
+
+    <!-- Game Over Screen -->
+    <div id="game-over" class="screen">
+        <h1 style="color: red; text-shadow: 0 0 10px red;">MISSION FAILED</h1>
+        <h2>Final Score: <span id="final-score">0</span></h2>
+        <button onclick="showMenu('main-menu')">Return to Base</button>
+    </div>
+</div>
+
+<script>
+    // --- Data Configuration based on Prompt ---
+    const difficulties = [
+        "Practice", "Kids", "Very easy", "Easy", "Normal", "Hard", "Very hard", 
+        "Insane", "Nightmare", "Nightsmarly", "Void", "Void bound", "Corrupted", 
+        "You will fall", "End", "Now this is the end for you"
+    ];
+    const modes = [
+        "Mission", "Classic", "Bosses", "Endless", "Time attack", 
+        "Chaos", "Random", "Hunter", "Target", "Hyper"
+    ];
+
+    // Populate UI Dropdowns
+    const diffSelect = document.getElementById('diff-select');
+    difficulties.forEach(d => diffSelect.innerHTML += `<option value="${d}">${d}</option>`);
+    diffSelect.value = "Normal";
+
+    const modeSelect = document.getElementById('mode-select');
+    modes.forEach(m => modeSelect.innerHTML += `<option value="${m}">${m}</option>`);
+
+    // --- Game Engine Setup ---
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    let gameLoopReq;
+    let width, height;
+    let score = 0;
+    let frame = 0;
+    let gameState = 'MENU'; // MENU, PLAYING, GAMEOVER
+
+    function resize() {
+        width = canvas.width = canvas.parentElement.clientWidth;
+        height = canvas.height = canvas.parentElement.clientHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // --- Input Management (Keyboard & Relative Touch) ---
+    const keys = {};
+    window.addEventListener('keydown', e => keys[e.code] = true);
+    window.addEventListener('keyup', e => keys[e.code] = false);
+
+    let touchX = 0, touchY = 0;
+    let isTouching = false;
+    
+    canvas.addEventListener('touchstart', e => {
+        e.preventDefault();
+        isTouching = true;
+        touchX = e.touches[0].clientX - canvas.getBoundingClientRect().left;
+        touchY = e.touches[0].clientY - canvas.getBoundingClientRect().top;
+    }, {passive: false});
+
+    canvas.addEventListener('touchmove', e => {
+        e.preventDefault();
+        if (!player || gameState !== 'PLAYING') return;
+        let newTx = e.touches[0].clientX - canvas.getBoundingClientRect().left;
+        let newTy = e.touches[0].clientY - canvas.getBoundingClientRect().top;
+        
+        // Relative Touch Logic
+        let dx = newTx - touchX;
+        let dy = newTy - touchY;
+        player.x += dx * 1.5; // Sensitivity multiplier
+        player.y += dy * 1.5;
+        
+        touchX = newTx;
+        touchY = newTy;
+    }, {passive: false});
+
+    canvas.addEventListener('touchend', e => { isTouching = false; });
+
+    // --- Entities ---
+    class Player {
+        constructor() {
+            this.x = width / 2;
+            this.y = height - 100;
+            this.size = 15;
+            this.speed = 5;
+            this.hp = 100;
+            this.priLvl = 1; // 1 to 5
+            this.secLvl = 1; // 1 to 5
+            this.cooldown = 0;
+            this.secCooldown = 0;
+            this.baseDamage = 10;
+        }
+
+        update() {
+            // Keyboard movement
+            if (keys['ArrowUp'] || keys['KeyW']) this.y -= this.speed;
+            if (keys['ArrowDown'] || keys['KeyS']) this.y += this.speed;
+            if (keys['ArrowLeft'] || keys['KeyA']) this.x -= this.speed;
+            if (keys['ArrowRight'] || keys['KeyD']) this.x += this.speed;
+
+            // Boundaries
+            this.x = Math.max(this.size, Math.min(width - this.size, this.x));
+            this.y = Math.max(this.size, Math.min(height - this.size, this.y));
+
+            // Auto-fire / Spacebar
+            if (this.cooldown > 0) this.cooldown--;
+            if (this.secCooldown > 0) this.secCooldown--;
+
+            if (keys['Space'] || isTouching || true) { // Auto fire is always on for arcade feel
+                this.shootPrimary();
+                this.shootSecondary();
+            }
+        }
+
+        shootPrimary() {
+            if (this.cooldown > 0) return;
+            
+            let dmg = this.baseDamage;
+            if (this.priLvl >= 2) dmg *= 1.5;
+            if (this.priLvl >= 5) dmg *= 2.0;
+
+            let rate = (this.priLvl >= 4) ? 8 : 12; // Increased firerate at lvl 4
+            
+            // Level logic for RKU 01 Viper Blaster
+            if (this.priLvl <= 2) {
+                // 2 Frontshot
+                bullets.push(new Bullet(this.x - 8, this.y - 10, -15, 'white', dmg));
+                bullets.push(new Bullet(this.x + 8, this.y - 10, -15, 'white', dmg));
+            } else {
+                // 3 Frontshot
+                bullets.push(new Bullet(this.x - 10, this.y - 10, -15, 'white', dmg));
+                bullets.push(new Bullet(this.x, this.y - 15, -15, 'white', dmg));
+                bullets.push(new Bullet(this.x + 10, this.y - 10, -15, 'white', dmg));
+            }
+            this.cooldown = rate;
+        }
+
+        shootSecondary() {
+            if (this.secCooldown > 0) return;
+            if (this.secLvl === 1) return; // None at lvl 1
+            
+            let dmg = 20;
+            if (this.secLvl >= 3) dmg *= 1.5;
+            if (this.secLvl >= 5) dmg *= 2;
+
+            if (this.secLvl >= 2 && this.secLvl <= 3) {
+                // 2 Missiles
+                bullets.push(new Missile(this.x - 20, this.y, 'cyan', dmg));
+                bullets.push(new Missile(this.x + 20, this.y, 'cyan', dmg));
+            } else {
+                // 4 Missiles
+                bullets.push(new Missile(this.x - 25, this.y + 10, 'cyan', dmg, -2));
+                bullets.push(new Missile(this.x - 15, this.y, 'cyan', dmg, -1));
+                bullets.push(new Missile(this.x + 15, this.y, 'cyan', dmg, 1));
+                bullets.push(new Missile(this.x + 25, this.y + 10, 'cyan', dmg, 2));
+            }
+            this.secCooldown = 45; // Slower fire rate than primary
+        }
+
+        draw() {
+            ctx.fillStyle = 'white';
+            ctx.beginPath();
+            ctx.moveTo(this.x, this.y - this.size);
+            ctx.lineTo(this.x - this.size, this.y + this.size);
+            ctx.lineTo(this.x, this.y + this.size - 5);
+            ctx.lineTo(this.x + this.size, this.y + this.size);
+            ctx.closePath();
+            ctx.fill();
+            
+            // Cockpit glow
+            ctx.fillStyle = 'cyan';
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, 4, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+
+    class Bullet {
+        constructor(x, y, vy, color, dmg) {
+            this.x = x; this.y = y; this.vy = vy; this.vx = 0;
+            this.color = color; this.dmg = dmg;
+            this.width = 4; this.height = 15;
+            this.isPlayer = vy < 0;
+        }
+        update() { this.y += this.vy; this.x += this.vx; }
+        draw() {
+            ctx.fillStyle = this.color;
+            ctx.fillRect(this.x - this.width/2, this.y - this.height/2, this.width, this.height);
+        }
+    }
+
+    class Missile extends Bullet {
+        constructor(x, y, color, dmg, vx = 0) {
+            super(x, y, -8, color, dmg);
+            this.vx = vx;
+            this.target = null;
+        }
+        update() {
+            // Homing logic
+            if (!this.target || this.target.hp <= 0) {
+                this.target = enemies[Math.floor(Math.random() * enemies.length)];
+            }
+            if (this.target) {
+                let dx = this.target.x - this.x;
+                this.vx += dx * 0.01;
+                this.vx = Math.max(-5, Math.min(5, this.vx)); // clamp
+            }
+            super.update();
+            createParticle(this.x, this.y + 5, this.color, 1); // Trail
+        }
+        draw() {
+            ctx.fillStyle = this.color;
+            ctx.beginPath(); ctx.arc(this.x, this.y, 5, 0, Math.PI*2); ctx.fill();
+        }
+    }
+
+    class Enemy {
+        constructor(type) {
+            this.x = Math.random() * (width - 40) + 20;
+            this.y = -30;
+            this.type = type; // e.g., 'F4U', 'Submarine'
+            this.size = 20;
+            
+            if (type === 'F4U Corsair') {
+                this.hp = 30; this.speed = 3; this.color = '#ff4444';
+            } else if (type === 'Submarine Flying') {
+                this.hp = 80; this.speed = 1.5; this.color = '#aa44ff'; this.size = 30;
+            } else { // Tiny frog plane
+                this.hp = 15; this.speed = 5; this.color = '#44ff44'; this.size = 15;
+            }
+        }
+        update() {
+            this.y += this.speed;
+            if (Math.random() < 0.01 && this.y > 0) {
+                enemyBullets.push(new Bullet(this.x, this.y, 6, '#ff0', 10));
+            }
+        }
+        draw() {
+            ctx.fillStyle = this.color;
+            ctx.fillRect(this.x - this.size, this.y - this.size, this.size*2, this.size*2);
+        }
+    }
+
+    class PowerUp {
+        constructor(x, y, type) {
+            this.x = x; this.y = y; this.type = type; // 0 = Primary, 1 = Secondary
+            this.size = 12; this.vy = 2;
+        }
+        update() { this.y += this.vy; }
+        draw() {
+            ctx.fillStyle = this.type === 0 ? 'white' : 'cyan';
+            ctx.font = "14px Arial";
+            ctx.fillText(this.type === 0 ? "P" : "S", this.x - 5, this.y + 5);
+            ctx.strokeStyle = ctx.fillStyle;
+            ctx.strokeRect(this.x - this.size, this.y - this.size, this.size*2, this.size*2);
+        }
+    }
+
+    class Particle {
+        constructor(x, y, color, size) {
+            this.x = x; this.y = y; this.color = color; this.size = size;
+            this.vx = (Math.random() - 0.5) * 5;
+            this.vy = (Math.random() - 0.5) * 5;
+            this.life = 1.0;
+        }
+        update() {
+            this.x += this.vx; this.y += this.vy; this.life -= 0.05;
+        }
+        draw() {
+            ctx.globalAlpha = this.life;
+            ctx.fillStyle = this.color;
+            ctx.fillRect(this.x, this.y, this.size, this.size);
+            ctx.globalAlpha = 1.0;
+        }
+    }
+
+    // --- Globals ---
+    let player;
+    let bullets = [];
+    let enemyBullets = [];
+    let enemies = [];
+    let particles = [];
+    let powerups = [];
+
+    function createParticle(x, y, color, amount = 10) {
+        for(let i=0; i<amount; i++) particles.push(new Particle(x, y, color, Math.random()*3 + 2));
+    }
+
+    // --- UI Logic ---
+    function showMenu(id) {
+        document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+        if(id) document.getElementById(id).classList.add('active');
+    }
+
+    function startGame() {
+        showMenu(null); // Hide menus
+        player = new Player();
+        bullets = []; enemyBullets = []; enemies = []; particles = []; powerups = [];
+        score = 0; frame = 0;
+        gameState = 'PLAYING';
+        updateHUD();
+        loop();
+    }
+
+    function gameOver() {
+        gameState = 'GAMEOVER';
+        document.getElementById('final-score').innerText = score;
+        showMenu('game-over');
+    }
+
+    function updateHUD() {
+        document.getElementById('score').innerText = score;
+        document.getElementById('hp').innerText = Math.max(0, Math.floor(player.hp));
+        document.getElementById('pri-lvl').innerText = player.priLvl;
+        document.getElementById('sec-lvl').innerText = player.secLvl;
+    }
+
+    // --- Main Game Loop ---
+    function loop() {
+        if (gameState !== 'PLAYING') return;
+        frame++;
+        
+        // Clear screen (with trail effect)
+        ctx.fillStyle = 'rgba(5, 5, 16, 0.4)';
+        ctx.fillRect(0, 0, width, height);
+
+        // Starfield background
+        ctx.fillStyle = 'white';
+        if(frame % 2 === 0) ctx.fillRect(Math.random() * width, 0, 1, Math.random() * 5 + 5);
+
+        // Spawn Enemies (Stage 1 Simulation)
+        if (frame % 60 === 0) {
+            let r = Math.random();
+            if (r < 0.5) enemies.push(new Enemy('F4U Corsair'));
+            else if (r < 0.8) enemies.push(new Enemy('Tiny frog plane'));
+            else enemies.push(new Enemy('Submarine Flying'));
+        }
+
+        // Update & Draw Player
+        player.update();
+        player.draw();
+
+        // Arrays processing
+        [...bullets, ...enemyBullets, ...enemies, ...particles, ...powerups].forEach(obj => {
+            if(obj.update) obj.update();
+            if(obj.draw) obj.draw();
+        });
+
+        // --- Collisions ---
+        
+        // Player Bullets hitting Enemies
+        for (let i = bullets.length - 1; i >= 0; i--) {
+            let b = bullets[i];
+            let hit = false;
+            for (let j = enemies.length - 1; j >= 0; j--) {
+                let e = enemies[j];
+                // Simple AABB collision
+                if (Math.abs(b.x - e.x) < e.size + b.width && Math.abs(b.y - e.y) < e.size + b.height) {
+                    e.hp -= b.dmg;
+                    createParticle(b.x, b.y, b.color, 3);
+                    hit = true;
+                    
+                    if (e.hp <= 0) {
+                        createParticle(e.x, e.y, e.color, 20);
+                        score += e.size * 10;
+                        updateHUD();
+                        // Drop powerup chance (10%)
+                        if (Math.random() < 0.1) {
+                            powerups.push(new PowerUp(e.x, e.y, Math.random() < 0.5 ? 0 : 1));
+                        }
+                        enemies.splice(j, 1);
+                    }
+                    break;
+                }
+            }
+            if (hit || b.y < -50) bullets.splice(i, 1);
+        }
+
+        // Enemy Bullets hitting Player
+        for (let i = enemyBullets.length - 1; i >= 0; i--) {
+            let b = enemyBullets[i];
+            if (Math.abs(b.x - player.x) < player.size && Math.abs(b.y - player.y) < player.size) {
+                player.hp -= b.dmg;
+                createParticle(player.x, player.y, 'red', 10);
+                enemyBullets.splice(i, 1);
+                updateHUD();
+                if (player.hp <= 0) gameOver();
+            } else if (b.y > height + 50) {
+                enemyBullets.splice(i, 1);
+            }
+        }
+
+        // Player collecting Powerups
+        for (let i = powerups.length - 1; i >= 0; i--) {
+            let p = powerups[i];
+            if (Math.abs(p.x - player.x) < player.size + p.size && Math.abs(p.y - player.y) < player.size + p.size) {
+                if (p.type === 0 && player.priLvl < 5) player.priLvl++;
+                if (p.type === 1 && player.secLvl < 5) player.secLvl++;
+                createParticle(player.x, player.y, p.type === 0 ? 'white' : 'cyan', 15);
+                updateHUD();
+                powerups.splice(i, 1);
+            } else if (p.y > height + 50) {
+                powerups.splice(i, 1);
+            }
+        }
+        
+        // Enemies hitting player
+        for (let i = enemies.length - 1; i >= 0; i--) {
+            let e = enemies[i];
+            if (Math.abs(e.x - player.x) < player.size + e.size && Math.abs(e.y - player.y) < player.size + e.size) {
+                player.hp -= 20;
+                e.hp = 0; // Destroy enemy
+                createParticle(e.x, e.y, e.color, 20);
+                enemies.splice(i, 1);
+                updateHUD();
+                if (player.hp <= 0) gameOver();
+            } else if (e.y > height + 50) {
+                enemies.splice(i, 1); // Clean up off screen
+            }
+        }
+
+        // Cleanup particles
+        particles = particles.filter(p => p.life > 0);
+
+        if (gameState === 'PLAYING') {
+            requestAnimationFrame(loop);
+        }
+    }
+</script>
+</body>
+  </html>
+  
